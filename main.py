@@ -53,7 +53,6 @@ intents.members = True # Essential for fetching members for commands like /rank 
 # Slash commands don't use prefixes.
 bot = commands.Bot(command_prefix='!', intents=intents) # Changed prefix to '!' as slash commands don't use it.
 # bot.tree is the command tree for slash commands
-bot.tree = discord.app_commands.CommandTree(bot)
 
 # --- Database Connection ---
 client = None # MongoDB client
