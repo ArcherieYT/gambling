@@ -45,7 +45,7 @@ CAREER_COOLDOWN = 86400 # 24 hours
 # Define intents. Message Content Intent is CRITICAL for reading commands.
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True # Required for some button interactions if users aren't cached, though not strictly needed for this basic blackjack.
+intents.members = True # Good practice for user interactions, especially with UI components later
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
@@ -440,6 +440,23 @@ async def blackjack(ctx, bet: int):
             f"You now have **${user_data['money']:,}**."
         )
 
+@bot.command(name='rank')
+async def rank(ctx, member: discord.Member = None):
+    """
+    Displays your current career or the career of another member.
+    Usage: /rank (to see your own) or /rank @username (to see someone else's)
+    """
+    target_member = member if member else ctx.author # If no member is provided, default to the command author
+    
+    target_user_id = str(target_member.id)
+    target_user_data = get_user_data(target_user_id)
+    
+    career_name = target_user_data["career"]
+    
+    if target_member == ctx.author:
+        await ctx.send(f"{ctx.author.display_name} is currently a **{career_name}**.")
+    else:
+        await ctx.send(f"{target_member.display_name} is currently a **{career_name}**.")
 
 # --- Run the bot ---
 if __name__ == '__main__':
