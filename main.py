@@ -47,6 +47,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True # Good practice for user interactions, especially with UI components later
 
+# IMPORTANT CHANGE: Define bot with `commands.Bot` as before
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 # --- Helper Functions for Data Management ---
@@ -164,26 +165,28 @@ async def work(ctx):
         f"You now have **${user_data['money']:,}**."
     )
 
-@bot.command(name='career')
+# CORRECTED: Define career as a commands.Group
+@bot.group(name='career', invoke_without_command=True)
 async def career(ctx):
     """
     Displays your current career or attempts to advance your career.
-    Usage: /career [roll]
+    Usage: /career (to display) or /career roll (to attempt advance)
     """
     user_id = str(ctx.author.id)
     user_data = get_user_data(user_id)
 
-    # If the user just types /career
-    if ctx.invoked_subcommand is None: # No subcommand (like /career roll) was called
+    # This block executes if /career is called without a subcommand (like just "/career")
+    if ctx.invoked_subcommand is None:
         current_career = user_data["career"]
         current_career_info = CAREERS.get(current_career, CAREERS["homeless"])
-        next_career_index = CAREER_ORDER.index(current_career) + 1
-
+        
         response = f"Your current career is **{current_career}** ({current_career_info['description']}).\n"
         response += f"You earn **${int(current_career_info['base_pay'] * current_career_info['multiplier']):,}** per work."
 
-        if next_career_index < len(CAREER_ORDER):
-            next_career_name = CAREER_ORDER[next_career_index]
+        # Find the next career in the ordered list
+        current_career_index = CAREER_ORDER.index(current_career)
+        if current_career_index < len(CAREER_ORDER) - 1:
+            next_career_name = CAREER_ORDER[current_career_index + 1]
             next_career_info = CAREERS.get(next_career_name)
             response += (
                 f"\nYour next career is **{next_career_name}** ({next_career_info['description']}). "
@@ -193,7 +196,6 @@ async def career(ctx):
             response += "\nYou are at the highest career level!"
         
         await ctx.send(response)
-        return
 
 @career.command(name='roll')
 async def career_roll(ctx):
