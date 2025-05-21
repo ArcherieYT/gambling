@@ -8,12 +8,7 @@ import os
 import time
 
 # --- Configuration ---
-# You'll need to create a 'config.json' file in the same directory as this bot
-# Example config.json:
-# {
-#     "DISCORD_BOT_TOKEN": "YOUR_BOT_TOKEN_HERE"
-# }
-
+# Your bot token will be loaded from a Render Environment Variable, NOT from config.json.
 # Define careers and their multipliers
 CAREERS = {
     "homeless": {"multiplier": 0.5, "base_pay": 50, "description": "the starting career"},
@@ -32,6 +27,10 @@ CAREER_ORDER = list(CAREERS.keys())
 CAREER_ADVANCEMENT_CHANCE = 0.10
 
 # Data file to store user money and careers
+# This file (users.json) will be created and managed by Render's ephemeral storage.
+# IMPORTANT: Data stored in users.json on Render's free tier is NOT persistent.
+# It will be reset every time your bot restarts or redeploys.
+# For persistent data, a database solution would be required.
 USER_DATA_FILE = 'users.json'
 
 # Cooldowns in seconds
@@ -81,6 +80,8 @@ def get_user_data(user_id):
         # Ensure all fields are present for existing users (for new fields added later)
         if "last_work_time" not in data[user_id_str]:
             data[user_id_str]["last_work_time"] = 0
+            # Note: We save immediately to ensure the new field is added for existing users.
+            # This can be optimized if you have many users, but fine for a bot.
             save_user_data(data)
         if "last_career_roll_time" not in data[user_id_str]:
             data[user_id_str]["last_career_roll_time"] = 0
@@ -105,19 +106,11 @@ async def on_ready():
 
 # --- Run the bot ---
 if __name__ == '__main__':
-    # Load bot token from config.json
-    try:
-        with open('config.json', 'r') as f:
-            config = json.load(f)
-        token = config.get("DISCORD_BOT_TOKEN")
-        if not token:
-            print("Error: 'DISCORD_BOT_TOKEN' not found in config.json. Please ensure it's correct.")
-            exit()
-    except FileNotFoundError:
-        print("Error: config.json not found. Please create it in the same directory as main.py with your bot token.")
-        exit()
-    except json.JSONDecodeError:
-        print("Error: Invalid JSON in config.json. Please check its format.")
+    # Load bot token from environment variables (for Render deployment)
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        print("Error: DISCORD_BOT_TOKEN environment variable not set.")
+        print("Please set this variable on your Render dashboard.")
         exit()
 
     bot.run(token)
