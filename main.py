@@ -32,12 +32,14 @@ CAREER_ADVANCEMENT_CHANCE = 0.10
 
 # Data file to store user money and careers
 # This file (users.json) will be created and managed by Render's ephemeral storage.
-# IMPORTANT: Data stored in users.json on Render's free tier is NOT persistent.
-# It will be reset every time your bot restarts or redeploys.
-# For persistent data, a database solution would be required.
+# !!! IMPORTANT NOTE ON DATA PERSISTENCE !!!
+# Data stored in users.json on Render's FREE tier is NOT persistent.
+# It will be reset every time your bot restarts or redeploys (which happens frequently).
+# For persistent data, a proper database solution (e.g., MongoDB Atlas, PostgreSQL, etc.)
+# hosted externally would be required. This current setup will lose data on restart.
 USER_DATA_FILE = 'users.json'
 
-# Cooldowns in seconds
+# Cooldowns in seconds (1 hour = 3600 seconds, 24 hours = 86400 seconds)
 WORK_COOLDOWN = 3600 # 1 hour
 CAREER_COOLDOWN = 86400 # 24 hours
 
@@ -45,9 +47,8 @@ CAREER_COOLDOWN = 86400 # 24 hours
 # Define intents. Message Content Intent is CRITICAL for reading commands.
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True # Good practice for user interactions, especially with UI components later
+intents.members = True # Essential for fetching members for commands like /rank and /balance
 
-# IMPORTANT CHANGE: Define bot with `commands.Bot` as before
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 # --- Helper Functions for Data Management ---
@@ -57,7 +58,18 @@ def load_user_data():
     if os.path.exists(USER_DATA_FILE):
         with open(USER_DATA_FILE, 'r') as f:
             try:
-                return json.load(f)
+                data = json.load(f)
+                # Ensure all users have all necessary fields upon loading
+                for user_id, user_info in data.items():
+                    if "money" not in user_info:
+                        user_info["money"] = 0
+                    if "career" not in user_info:
+                        user_info["career"] = "homeless"
+                    if "last_work_time" not in user_info:
+                        user_info["last_work_time"] = 0
+                    if "last_career_roll_time" not in user_info:
+                        user_info["last_career_roll_time"] = 0
+                return data
             except json.JSONDecodeError:
                 print(f"Error: Could not decode JSON from {USER_DATA_FILE}. Returning empty data.")
                 return {}
@@ -80,16 +92,19 @@ def get_user_data(user_id):
             "last_work_time": 0,
             "last_career_roll_time": 0
         }
-        save_user_data(data)
+        # Immediately save new user data so it's present for subsequent operations
+        save_user_data(data) 
     else:
         # Ensure all fields are present for existing users (for new fields added later)
+        # This part is mostly for existing users when new fields are added to the default structure
+        user_updated = False
         if "last_work_time" not in data[user_id_str]:
             data[user_id_str]["last_work_time"] = 0
-            # Note: We save immediately to ensure the new field is added for existing users.
-            # This can be optimized if you have many users, but fine for a bot.
-            save_user_data(data)
+            user_updated = True
         if "last_career_roll_time" not in data[user_id_str]:
             data[user_id_str]["last_career_roll_time"] = 0
+            user_updated = True
+        if user_updated:
             save_user_data(data)
     return data[user_id_str]
 
@@ -132,7 +147,9 @@ async def on_ready():
 async def work(ctx):
     """Allows a user to work and earn money based on their career."""
     user_id = str(ctx.author.id)
-    user_data = get_user_data(user_id)
+    # Always load the entire dataset to ensure we modify and save the correct, full structure
+    all_user_data = load_user_data() 
+    user_data = get_user_data(user_id) # This call will ensure the user_data is initialized if new
 
     # Check cooldown
     current_time = time.time()
@@ -154,29 +171,33 @@ async def work(ctx):
     
     base_pay = career_info["base_pay"]
     multiplier = career_info["multiplier"]
-    earnings = int(base_pay * multiplier * (random.uniform(0.8, 1.2))) # Randomize earnings a bit
+    # Pay varies due to random.uniform(0.8, 1.2) - remove if you want static pay
+    earnings = int(base_pay * multiplier * (random.uniform(0.8, 1.2))) 
 
     user_data["money"] += earnings
     user_data["last_work_time"] = current_time
-    save_user_data(load_user_data()) # Save all data after update
+
+    # Update the overall data structure with the modified user_data
+    all_user_data[user_id] = user_data
+    save_user_data(all_user_data) # Save all data after update
 
     await ctx.send(
         f"You worked as a **{career_name}** and earned **${earnings:,}**! "
         f"You now have **${user_data['money']:,}**."
     )
 
-# CORRECTED: Define career as a commands.Group
+# Define career as a commands.Group for subcommands
 @bot.group(name='career', invoke_without_command=True)
 async def career(ctx):
     """
     Displays your current career or attempts to advance your career.
     Usage: /career (to display) or /career roll (to attempt advance)
     """
-    user_id = str(ctx.author.id)
-    user_data = get_user_data(user_id)
-
     # This block executes if /career is called without a subcommand (like just "/career")
     if ctx.invoked_subcommand is None:
+        user_id = str(ctx.author.id)
+        user_data = get_user_data(user_id) # Ensure user_data is initialized
+
         current_career = user_data["career"]
         current_career_info = CAREERS.get(current_career, CAREERS["homeless"])
         
@@ -201,7 +222,8 @@ async def career(ctx):
 async def career_roll(ctx):
     """Attempts to advance your career."""
     user_id = str(ctx.author.id)
-    user_data = get_user_data(user_id)
+    all_user_data = load_user_data()
+    user_data = get_user_data(user_id) # Ensure user_data is initialized
 
     current_career_name = user_data["career"]
     current_career_index = CAREER_ORDER.index(current_career_name)
@@ -232,18 +254,22 @@ async def career_roll(ctx):
         next_career_index = current_career_index + 1
         new_career_name = CAREER_ORDER[next_career_index]
         user_data["career"] = new_career_name
-        save_user_data(load_user_data())
+        
         await ctx.send(
             f"Congratulations! 🎉 You've been promoted from **{current_career_name}** "
             f"to **{new_career_name}**! "
             f"You now earn **${int(CAREERS[new_career_name]['base_pay'] * CAREERS[new_career_name]['multiplier']):,}** per work."
         )
     else:
-        save_user_data(load_user_data()) # Still save cooldown even if failed
         await ctx.send(
             f"You tried to advance your career from **{current_career_name}**, "
             f"but you weren't successful this time. Better luck next time!"
         )
+    
+    # Update the overall data structure with the modified user_data
+    all_user_data[user_id] = user_data
+    save_user_data(all_user_data) # Save all data after update (including cooldown)
+
 
 # --- Blackjack Game Logic ---
 
@@ -291,7 +317,8 @@ async def blackjack(ctx, bet: int):
     Usage: /blackjack <bet_amount>
     """
     user_id = str(ctx.author.id)
-    user_data = get_user_data(user_id)
+    all_user_data = load_user_data()
+    user_data = get_user_data(user_id) # Ensure user_data is initialized
 
     if bet <= 0:
         await ctx.send("You must bet a positive amount of money.")
@@ -303,7 +330,8 @@ async def blackjack(ctx, bet: int):
 
     # Deduct bet at the start of the game
     user_data["money"] -= bet
-    save_user_data(load_user_data()) # Save all data
+    all_user_data[user_id] = user_data
+    save_user_data(all_user_data) # Save all data
 
     deck = create_deck()
     random.shuffle(deck)
@@ -326,7 +354,8 @@ async def blackjack(ctx, bet: int):
         if dealer_value == 21:
             # Both have Blackjack - Push
             user_data["money"] += bet # Return bet
-            save_user_data(load_user_data())
+            all_user_data[user_id] = user_data
+            save_user_data(all_user_data)
             await ctx.send(
                 f"**Blackjack!** 🥳\n"
                 f"Your hand: {hand_to_string(player_hand)} (Value: 21)\n"
@@ -338,7 +367,8 @@ async def blackjack(ctx, bet: int):
             # Player Blackjack - Win 1.5x bet
             win_amount = int(bet * 1.5)
             user_data["money"] += (bet + win_amount)
-            save_user_data(load_user_data())
+            all_user_data[user_id] = user_data
+            save_user_data(all_user_data)
             await ctx.send(
                 f"**Blackjack!** 🎉 You win **${win_amount:,}**!\n"
                 f"Your hand: {hand_to_string(player_hand)} (Value: 21)\n"
@@ -374,8 +404,8 @@ async def blackjack(ctx, bet: int):
         except asyncio.TimeoutError:
             # User timed out, treat as a stand and they lose their bet
             await ctx.send(f"Time's up! You automatically stood. You lost your bet of **${bet:,}**. You now have **${user_data['money']:,}**.")
-            player_value = calculate_hand_value(player_hand) # Recalculate just in case, though it should be same as last check
-            break # Exit the loop to proceed to dealer's turn
+            # No need to explicitly save here as it's a loss, and data was already saved at game start
+            return # End the game
 
         if msg.content.lower() == '/hit':
             new_card = deck.pop()
@@ -386,7 +416,8 @@ async def blackjack(ctx, bet: int):
             if player_value > 21:
                 # Player busts
                 await ctx.send(f"**BUST!** 😭 Your hand value is over 21. You lost **${bet:,}**.\nYou now have **${user_data['money']:,}**.")
-                save_user_data(load_user_data())
+                all_user_data[user_id] = user_data
+                save_user_data(all_user_data)
                 return # End the game
             elif player_value == 21:
                 await ctx.send("You hit 21! Standing automatically.")
@@ -411,7 +442,6 @@ async def blackjack(ctx, bet: int):
         # Dealer busts
         win_amount = bet * 2
         user_data["money"] += win_amount
-        save_user_data(load_user_data())
         await ctx.send(
             f"**DEALER BUSTS!** 🎉 Dealer's hand value is over 21. You win **${bet:,}**!\n"
             f"You now have **${user_data['money']:,}**."
@@ -420,7 +450,6 @@ async def blackjack(ctx, bet: int):
         # Player has higher value than dealer (and not busted)
         win_amount = bet * 2
         user_data["money"] += win_amount
-        save_user_data(load_user_data())
         await ctx.send(
             f"**YOU WIN!** 🎉 Your hand ({player_value}) is higher than the dealer's ({dealer_value}). You win **${bet:,}**!\n"
             f"You now have **${user_data['money']:,}**."
@@ -428,7 +457,6 @@ async def blackjack(ctx, bet: int):
     elif dealer_value > player_value:
         # Dealer has higher value than player
         # Bet already deducted at start, so no money change needed.
-        save_user_data(load_user_data()) # Ensure user data is saved
         await ctx.send(
             f"**DEALER WINS!** 😭 Dealer's hand ({dealer_value}) is higher than yours ({player_value}). You lost **${bet:,}**.\n"
             f"You now have **${user_data['money']:,}**."
@@ -436,11 +464,13 @@ async def blackjack(ctx, bet: int):
     else: # dealer_value == player_value
         # Push
         user_data["money"] += bet # Return bet
-        save_user_data(load_user_data())
         await ctx.send(
             f"**PUSH!** 🤝 Both you and the dealer have {player_value}. Your bet of **${bet:,}** has been returned.\n"
             f"You now have **${user_data['money']:,}**."
         )
+    
+    all_user_data[user_id] = user_data
+    save_user_data(all_user_data) # Save final data after blackjack game
 
 @bot.command(name='rank')
 async def rank(ctx, member: discord.Member = None):
@@ -451,7 +481,7 @@ async def rank(ctx, member: discord.Member = None):
     target_member = member if member else ctx.author # If no member is provided, default to the command author
     
     target_user_id = str(target_member.id)
-    target_user_data = get_user_data(target_user_id)
+    target_user_data = get_user_data(target_user_id) # Ensure user_data is initialized
     
     career_name = target_user_data["career"]
     
@@ -459,6 +489,25 @@ async def rank(ctx, member: discord.Member = None):
         await ctx.send(f"{ctx.author.display_name} is currently a **{career_name}**.")
     else:
         await ctx.send(f"{target_member.display_name} is currently a **{career_name}**.")
+
+@bot.command(name='balance', aliases=['bal', 'money'])
+async def balance(ctx, member: discord.Member = None):
+    """
+    Displays your current money or the money of another member.
+    Usage: /balance (to see your own) or /balance @username (to see someone else's)
+    """
+    target_member = member if member else ctx.author # If no member is provided, default to the command author
+    
+    target_user_id = str(target_member.id)
+    target_user_data = get_user_data(target_user_id) # Ensure user_data is initialized
+    
+    money = target_user_data["money"]
+    
+    if target_member == ctx.author:
+        await ctx.send(f"{ctx.author.display_name}, you currently have **${money:,}**.")
+    else:
+        await ctx.send(f"{target_member.display_name} currently has **${money:,}**.")
+
 
 # --- Run the bot ---
 if __name__ == '__main__':
