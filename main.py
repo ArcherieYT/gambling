@@ -45,7 +45,7 @@ CAREER_COOLDOWN = 86400 # 24 hours
 # Define intents. Message Content Intent is CRITICAL for reading commands.
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True # Good practice for user interactions, especially with UI components later
+intents.members = True # Required for some button interactions if users aren't cached, though not strictly needed for this basic blackjack.
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
@@ -125,8 +125,320 @@ async def on_ready():
     # await bot.change_presence(activity=discord.Game(name="with your money!"))
 
 
-# --- Commands (Will be added in subsequent steps) ---
-# This section will contain the /work, /career, and /blackjack commands.
+# --- Commands ---
+
+@bot.command(name='work')
+async def work(ctx):
+    """Allows a user to work and earn money based on their career."""
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    # Check cooldown
+    current_time = time.time()
+    time_since_last_work = current_time - user_data["last_work_time"]
+
+    if time_since_last_work < WORK_COOLDOWN:
+        remaining_time = WORK_COOLDOWN - time_since_last_work
+        hours, remainder = divmod(remaining_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        await ctx.send(
+            f"You need to rest! You can work again in "
+            f"{int(hours)}h {int(minutes)}m {int(seconds)}s."
+        )
+        return
+
+    # Calculate earnings
+    career_name = user_data["career"]
+    career_info = CAREERS.get(career_name, CAREERS["homeless"]) # Default to homeless if career not found
+    
+    base_pay = career_info["base_pay"]
+    multiplier = career_info["multiplier"]
+    earnings = int(base_pay * multiplier * (random.uniform(0.8, 1.2))) # Randomize earnings a bit
+
+    user_data["money"] += earnings
+    user_data["last_work_time"] = current_time
+    save_user_data(load_user_data()) # Save all data after update
+
+    await ctx.send(
+        f"You worked as a **{career_name}** and earned **${earnings:,}**! "
+        f"You now have **${user_data['money']:,}**."
+    )
+
+@bot.command(name='career')
+async def career(ctx):
+    """
+    Displays your current career or attempts to advance your career.
+    Usage: /career [roll]
+    """
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    # If the user just types /career
+    if ctx.invoked_subcommand is None: # No subcommand (like /career roll) was called
+        current_career = user_data["career"]
+        current_career_info = CAREERS.get(current_career, CAREERS["homeless"])
+        next_career_index = CAREER_ORDER.index(current_career) + 1
+
+        response = f"Your current career is **{current_career}** ({current_career_info['description']}).\n"
+        response += f"You earn **${int(current_career_info['base_pay'] * current_career_info['multiplier']):,}** per work."
+
+        if next_career_index < len(CAREER_ORDER):
+            next_career_name = CAREER_ORDER[next_career_index]
+            next_career_info = CAREERS.get(next_career_name)
+            response += (
+                f"\nYour next career is **{next_career_name}** ({next_career_info['description']}). "
+                f"You can try to advance by typing `/career roll`."
+            )
+        else:
+            response += "\nYou are at the highest career level!"
+        
+        await ctx.send(response)
+        return
+
+@career.command(name='roll')
+async def career_roll(ctx):
+    """Attempts to advance your career."""
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    current_career_name = user_data["career"]
+    current_career_index = CAREER_ORDER.index(current_career_name)
+
+    # Check if user is already at the highest career
+    if current_career_index == len(CAREER_ORDER) - 1:
+        await ctx.send(f"You are already at the highest career: **{current_career_name}**! There's no higher to go.")
+        return
+
+    # Check cooldown
+    current_time = time.time()
+    time_since_last_roll = current_time - user_data["last_career_roll_time"]
+
+    if time_since_last_roll < CAREER_COOLDOWN:
+        remaining_time = CAREER_COOLDOWN - time_since_last_roll
+        hours, remainder = divmod(remaining_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        await ctx.send(
+            f"You can't roll for a new career yet! Try again in "
+            f"{int(hours)}h {int(minutes)}m {int(seconds)}s."
+        )
+        return
+
+    user_data["last_career_roll_time"] = current_time # Update cooldown time regardless of success
+    
+    # Attempt to advance career
+    if random.random() < CAREER_ADVANCEMENT_CHANCE: # Check if random number is less than the chance (e.g., 0.10 for 10%)
+        next_career_index = current_career_index + 1
+        new_career_name = CAREER_ORDER[next_career_index]
+        user_data["career"] = new_career_name
+        save_user_data(load_user_data())
+        await ctx.send(
+            f"Congratulations! 🎉 You've been promoted from **{current_career_name}** "
+            f"to **{new_career_name}**! "
+            f"You now earn **${int(CAREERS[new_career_name]['base_pay'] * CAREERS[new_career_name]['multiplier']):,}** per work."
+        )
+    else:
+        save_user_data(load_user_data()) # Still save cooldown even if failed
+        await ctx.send(
+            f"You tried to advance your career from **{current_career_name}**, "
+            f"but you weren't successful this time. Better luck next time!"
+        )
+
+# --- Blackjack Game Logic ---
+
+SUITS = ['♠️', '♥️', '♦️', '♣️']
+RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+
+def create_deck():
+    """Creates a standard 52-card deck."""
+    return [(rank, suit) for suit in SUITS for rank in RANKS]
+
+def get_card_value(card):
+    """Returns the numerical value of a card in Blackjack."""
+    rank = card[0]
+    if rank in ['J', 'Q', 'K']:
+        return 10
+    elif rank == 'A':
+        return 11 # Ace will be handled as 1 or 11 in hand value calculation
+    else:
+        return int(rank)
+
+def calculate_hand_value(hand):
+    """Calculates the value of a Blackjack hand, accounting for Aces."""
+    value = 0
+    num_aces = 0
+    for card in hand:
+        card_value = get_card_value(card)
+        if card_value == 11: # It's an Ace
+            num_aces += 1
+        value += card_value
+
+    while value > 21 and num_aces > 0:
+        value -= 10 # Change Ace from 11 to 1
+        num_aces -= 1
+    return value
+
+def hand_to_string(hand):
+    """Converts a hand (list of cards) to a human-readable string."""
+    return ', '.join([f"{rank}{suit}" for rank, suit in hand])
+
+# --- Blackjack Command (Initial Version - without buttons yet) ---
+@bot.command(name='blackjack', aliases=['bj'])
+async def blackjack(ctx, bet: int):
+    """
+    Starts a game of Blackjack against the dealer.
+    Usage: /blackjack <bet_amount>
+    """
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    if bet <= 0:
+        await ctx.send("You must bet a positive amount of money.")
+        return
+
+    if user_data["money"] < bet:
+        await ctx.send(f"You don't have enough money! You have **${user_data['money']:,}** but tried to bet **${bet:,}**.")
+        return
+
+    # Deduct bet at the start of the game
+    user_data["money"] -= bet
+    save_user_data(load_user_data()) # Save all data
+
+    deck = create_deck()
+    random.shuffle(deck)
+
+    player_hand = []
+    dealer_hand = []
+
+    # Deal initial cards
+    player_hand.append(deck.pop())
+    dealer_hand.append(deck.pop())
+    player_hand.append(deck.pop())
+    dealer_hand.append(deck.pop())
+
+    player_value = calculate_hand_value(player_hand)
+    dealer_up_card = dealer_hand[0] # Dealer's face-up card
+
+    # Check for immediate Blackjacks
+    if player_value == 21:
+        dealer_value = calculate_hand_value(dealer_hand)
+        if dealer_value == 21:
+            # Both have Blackjack - Push
+            user_data["money"] += bet # Return bet
+            save_user_data(load_user_data())
+            await ctx.send(
+                f"**Blackjack!** 🥳\n"
+                f"Your hand: {hand_to_string(player_hand)} (Value: 21)\n"
+                f"Dealer's hand: {hand_to_string(dealer_hand)} (Value: {dealer_value})\n"
+                f"It's a push! Your bet of **${bet:,}** has been returned. You now have **${user_data['money']:,}**."
+            )
+            return
+        else:
+            # Player Blackjack - Win 1.5x bet
+            win_amount = int(bet * 1.5)
+            user_data["money"] += (bet + win_amount)
+            save_user_data(load_user_data())
+            await ctx.send(
+                f"**Blackjack!** 🎉 You win **${win_amount:,}**!\n"
+                f"Your hand: {hand_to_string(player_hand)} (Value: 21)\n"
+                f"Dealer's up card: {hand_to_string([dealer_up_card])}\n"
+                f"You now have **${user_data['money']:,}**."
+            )
+            return
+
+    # Start the game loop (for hit/hold) - This will be interactive with buttons later
+    # For now, let's just make the player hit or stand directly in the command
+    game_message = await ctx.send(
+        f"**Blackjack Game Started!** (Bet: **${bet:,}**)\n"
+        f"Your hand: {hand_to_string(player_hand)} (Value: {player_value})\n"
+        f"Dealer's up card: {hand_to_string([dealer_up_card])} and one hidden card."
+        "\n\nType `/hit` to draw another card or `/hold` to stick with your current hand."
+    )
+
+    # --- Wait for player's choice ---
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['/hit', '/hold']
+
+    while True:
+        try:
+            # Wait for either /hit or /hold command from the user
+            msg = await bot.wait_for('message', check=check, timeout=30.0) # 30-second timeout for a response
+            
+            # Delete the user's hit/hold message to keep chat clean (optional)
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass # Bot might not have permissions to delete messages
+
+        except asyncio.TimeoutError:
+            # User timed out, treat as a stand and they lose their bet
+            await ctx.send(f"Time's up! You automatically stood. You lost your bet of **${bet:,}**. You now have **${user_data['money']:,}**.")
+            player_value = calculate_hand_value(player_hand) # Recalculate just in case, though it should be same as last check
+            break # Exit the loop to proceed to dealer's turn
+
+        if msg.content.lower() == '/hit':
+            new_card = deck.pop()
+            player_hand.append(new_card)
+            player_value = calculate_hand_value(player_hand)
+            await ctx.send(f"You hit and got {new_card[0]}{new_card[1]}! Your hand: {hand_to_string(player_hand)} (Value: {player_value})")
+
+            if player_value > 21:
+                # Player busts
+                await ctx.send(f"**BUST!** 😭 Your hand value is over 21. You lost **${bet:,}**.\nYou now have **${user_data['money']:,}**.")
+                save_user_data(load_user_data())
+                return # End the game
+            elif player_value == 21:
+                await ctx.send("You hit 21! Standing automatically.")
+                break # Player hits 21, automatically stands
+        elif msg.content.lower() == '/hold':
+            await ctx.send("You chose to hold.")
+            break # Exit loop to proceed to dealer's turn
+
+    # --- Dealer's Turn ---
+    dealer_value = calculate_hand_value(dealer_hand)
+    await ctx.send(f"Dealer's turn. Dealer's hand: {hand_to_string(dealer_hand)} (Value: {dealer_value})")
+
+    while dealer_value < 17:
+        new_card = deck.pop()
+        dealer_hand.append(new_card)
+        dealer_value = calculate_hand_value(dealer_hand)
+        await ctx.send(f"Dealer hits and gets {new_card[0]}{new_card[1]}! Dealer's hand: {hand_to_string(dealer_hand)} (Value: {dealer_value})")
+        await asyncio.sleep(1) # Small delay for better readability
+
+    # --- Determine Winner ---
+    if dealer_value > 21:
+        # Dealer busts
+        win_amount = bet * 2
+        user_data["money"] += win_amount
+        save_user_data(load_user_data())
+        await ctx.send(
+            f"**DEALER BUSTS!** 🎉 Dealer's hand value is over 21. You win **${bet:,}**!\n"
+            f"You now have **${user_data['money']:,}**."
+        )
+    elif dealer_value < player_value:
+        # Player has higher value than dealer (and not busted)
+        win_amount = bet * 2
+        user_data["money"] += win_amount
+        save_user_data(load_user_data())
+        await ctx.send(
+            f"**YOU WIN!** 🎉 Your hand ({player_value}) is higher than the dealer's ({dealer_value}). You win **${bet:,}**!\n"
+            f"You now have **${user_data['money']:,}**."
+        )
+    elif dealer_value > player_value:
+        # Dealer has higher value than player
+        # Bet already deducted at start, so no money change needed.
+        save_user_data(load_user_data()) # Ensure user data is saved
+        await ctx.send(
+            f"**DEALER WINS!** 😭 Dealer's hand ({dealer_value}) is higher than yours ({player_value}). You lost **${bet:,}**.\n"
+            f"You now have **${user_data['money']:,}**."
+        )
+    else: # dealer_value == player_value
+        # Push
+        user_data["money"] += bet # Return bet
+        save_user_data(load_user_data())
+        await ctx.send(
+            f"**PUSH!** 🤝 Both you and the dealer have {player_value}. Your bet of **${bet:,}** has been returned.\n"
+            f"You now have **${user_data['money']:,}**."
+        )
 
 
 # --- Run the bot ---
