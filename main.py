@@ -7,6 +7,10 @@ import random
 import os
 import time
 
+# For the keepalive web server
+from threading import Thread
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
 # --- Configuration ---
 # Your bot token will be loaded from a Render Environment Variable, NOT from config.json.
 # Define careers and their multipliers
@@ -88,6 +92,27 @@ def get_user_data(user_id):
             save_user_data(data)
     return data[user_id_str]
 
+# --- Keepalive Web Server ---
+class MyHandler(SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_server():
+    port = int(os.environ.get("PORT", 8080)) # Get port from environment variable or default to 8080
+    server = HTTPServer(('0.0.0.0', port), MyHandler)
+    print(f"Starting keepalive server on port {port}")
+    server.serve_forever()
+
+def keep_alive():
+    """Starts the web server in a separate thread."""
+    server_thread = Thread(target=run_server)
+    server_thread.daemon = True # Allows the main program to exit even if this thread is running
+    server_thread.start()
+
+
 # --- Bot Events ---
 
 @bot.event
@@ -106,6 +131,9 @@ async def on_ready():
 
 # --- Run the bot ---
 if __name__ == '__main__':
+    # Start the keepalive web server
+    keep_alive() # This ensures Render keeps the service alive
+
     # Load bot token from environment variables (for Render deployment)
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
